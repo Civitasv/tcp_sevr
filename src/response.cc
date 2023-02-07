@@ -20,7 +20,7 @@ std::string render_static_file(const std::string &filename) {
   while (std::getline(fs, line)) {
     ss << line << '\n';
   }
-  fs.close();
 
+  fs.close();
   return ss.str();
 }

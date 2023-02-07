@@ -1,18 +1,20 @@
-﻿#include "http_server.h"
+﻿#include "error.h"
+#include "http_server.h"
 #include "response.h"
 #include "routes.h"
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <sys/socket.h>
 #include <unistd.h>
 
+namespace {
+constexpr int BUFFER_SIZE = 4096;
+}
+
 int main() {
   // init server
-  HttpServer server(6968);
-  if (!server.success) {
-    std::cout << "Oops...SERVER INIT FAILED" << '\n';
-    return 0;
-  }
+  HttpServer server("127.0.0.1", 8088);
 
   Routes route;
   route.Add("/", "index.html");
@@ -22,9 +24,16 @@ int main() {
   std::cout << route << '\n';
 
   while (true) {
-    char msg[4096] = "";
+    char msg[BUFFER_SIZE] = "";
     int client = accept(server.tcp_socket, NULL, NULL);
-    read(client, msg, 4095);
+    if (client == -1) {
+      ExitWithError("Server failed to accept incoming connection");
+    }
+
+    if (read(client, msg, BUFFER_SIZE) == -1) {
+      ExitWithError("Failed to read bytes from client");
+    }
+
     std::cout << msg << '\n';
 
     // method and route
