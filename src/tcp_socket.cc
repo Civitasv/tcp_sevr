@@ -3,14 +3,19 @@
 #include "response.h"
 #include "routes.h"
 #include <arpa/inet.h>
-#include <iostream>
-#include <netinet/in.h>
-#include <sys/epoll.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <asm-generic/errno-base.h>
+#include <asm-generic/errno.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <iostream>
+#include <netinet/in.h>
+#include <sstream>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 namespace {
 void SetNonBlocking(int fd) {
@@ -20,7 +25,8 @@ void SetNonBlocking(int fd) {
 }
 } // namespace
 
-TCPSocket::TCPSocket(const std::string &ip, int port) : port(port) {
+TCPSocket::TCPSocket(const std::string &ip, int port)
+    : port(port), socketfd(-1), epollfd(-1), epevent({}), events(), buf("") {
   // https://man7.org/linux/man-pages/man2/bind.2.html
   sockaddr_in addr;
   addr.sin_family = AF_INET;
@@ -65,21 +71,65 @@ TCPSocket::TCPSocket(const std::string &ip, int port) : port(port) {
   }
 }
 
-int TCPSocket::Accept(sockaddr *addr, socklen_t *len) {
-  int client = accept(socketfd, addr, len);
-  if (client == -1) {
-    ExitWithError("Accept error");
+void TCPSocket::Accept() {
+  while (true) {
+    sockaddr_in client_addr;
+    socklen_t len = sizeof(client_addr);
+    int client = accept(socketfd, (sockaddr *)&client_addr, &len);
+    if (client < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      } else {
+        ExitWithError("Accept error");
+      }
+    }
+
+    epevent.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+    epevent.data.fd = client;
+    SetNonBlocking(client);
+    // 将新的连接添加到 epoll 中
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client, &epevent) < 0) {
+      ExitWithError("Add error");
+    }
   }
-  return client;
 }
 
-int TCPSocket::Read(int client, void *buf, size_t buffer_size) {
-  int len = read(client, buf, buffer_size);
-  return len;
+std::string TCPSocket::Read(int client, char *buf, size_t buffer_size) {
+  std::stringstream ss;
+  while (true) {
+    int len = read(client, buf, BUFFER_SIZE);
+    if (len < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        break;
+      } else {
+        ExitWithError("Error While Reading");
+      }
+    } else if (len == 0) {
+      // 表示读取完毕
+      break;
+    }
+    ss << buf;
+    if (len < BUFFER_SIZE) {
+      break;
+    }
+  }
+  return ss.str();
 }
 
-int TCPSocket::Write(int client, const void *buf, size_t buffer_size) {
-  return write(client, buf, buffer_size);
+int TCPSocket::Write(int client, const char *buf, size_t buffer_size) {
+  size_t left = buffer_size;
+  ssize_t written;
+  const char *bufp = (const char *)buf;
+
+  while (left > 0) {
+    if ((written = write(client, bufp, left)) <= 0) {
+      return 0;
+    }
+    left -= written;
+    bufp += written;
+  }
+
+  return buffer_size;
 }
 
 void TCPSocket::Run(Routes &route) {
@@ -93,79 +143,75 @@ void TCPSocket::Run(Routes &route) {
       if (events[i].data.fd == socketfd) {
         // 说明是 client 的请求
         if (events[i].events & EPOLLIN) {
-          sockaddr_in client_addr;
-          socklen_t len = sizeof(client_addr);
-          int client = Accept((sockaddr *)&client_addr, &len);
-
-          epevent.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
-          epevent.data.fd = client;
-          SetNonBlocking(client);
-          // 将新的连接添加到 epoll 中
-          epoll_ctl(epollfd, EPOLL_CTL_ADD, client, &epevent);
+          std::cout << "============ CONNECT ===============" << '\n';
+          Accept();
+          std::cout << "============ CONNECT FINISHED ===============" << '\n';
         }
       } else {
         if (events[i].events & EPOLLIN) {
-          // 说明可读了
-          int len = Read(events[i].data.fd, msg, BUFFER_SIZE);
-          if (len <= 0) {
-            epoll_ctl(epollfd, EPOLL_CTL_DEL, events[i].data.fd, nullptr);
-            close(events[i].data.fd);
-          } else {
-            std::cout << msg << '\n';
+          int client = events[i].data.fd;
+          std::string msg = Read(client, buf, BUFFER_SIZE);
+          std::cout << "============= REQUEST INFO ============== " << '\n';
+          std::cout << msg << '\n';
+          std::cout << "============= REQUEST INFO ============== " << '\n';
 
-            // method and route
-            std::string ms(msg);
-            std::string method, url_route;
-            int n = ms.find('\n');
-            if (n != std::string::npos) {
-              int pos = 0;
-              std::string client_http_header = ms.substr(0, n);
-              if ((n = client_http_header.find(' ', pos)) !=
-                  std::string::npos) {
-                method = ms.substr(pos, n - pos);
-                pos = n + 1;
-              }
-
-              if ((n = client_http_header.find(' ', pos)) !=
-                  std::string::npos) {
-                url_route = ms.substr(pos, n - pos);
-                pos = n + 1;
-              }
+          std::cout << "============= REQUEST START ============== " << '\n';
+          // method and route
+          std::string method, url_route;
+          int n = msg.find('\n');
+          if (n != std::string::npos) {
+            int pos = 0;
+            std::string client_http_header = msg.substr(0, n);
+            if ((n = client_http_header.find(' ', pos)) != std::string::npos) {
+              method = msg.substr(pos, n - pos);
+              pos = n + 1;
             }
 
-            std::cout << "The method is: '" << method << "'" << '\n';
-            std::cout << "The route is: '" << url_route << "'" << '\n';
-
-            std::string templates = "";
-
-            if (url_route.find("/static/") != std::string::npos) {
-              // strcat(template, urlRoute+1);
-              templates += "static/index.css";
-            } else {
-              templates += "templates/";
-
-              if (!route.Has(url_route)) {
-                templates += "404.html";
-              } else {
-                templates += route.Get(url_route);
-              }
+            if ((n = client_http_header.find(' ', pos)) != std::string::npos) {
+              url_route = msg.substr(pos, n - pos);
+              pos = n + 1;
             }
-
-            char response[4096] = "HTTP/1.1 200 OK\r\n\r\n";
-            std::string page = render_static_file(templates);
-
-            strcat(response, page.data());
-            strcat(response, "\r\n\r\n");
-            Write(events[i].data.fd, response, sizeof(response));
-            epoll_ctl(epollfd, EPOLL_CTL_DEL, events[i].data.fd, nullptr);
-            std::cout << "Client out fd: " << events[i].data.fd << '\n';
-            close(events[i].data.fd);
           }
+
+          std::cout << "The method is: '" << method << "'" << '\n';
+          std::cout << "The route is: '" << url_route << "'" << '\n';
+
+          std::string templates = "";
+
+          if (url_route.find("/static/") != std::string::npos) {
+            // strcat(template, urlRoute+1);
+            templates += "static/index.css";
+          } else {
+            templates += "templates/";
+
+            if (!route.Has(url_route)) {
+              templates += "404.html";
+            } else {
+              templates += route.Get(url_route);
+            }
+          }
+
+          std::string response = "HTTP/1.1 200 OK\r\n\r\n";
+          std::string page = render_static_file(templates);
+
+          response += page.data();
+          response += "\r\n\r\n";
+
+          int writelen = Write(events[i].data.fd, response.c_str(),
+                               response.size() * sizeof(char));
+          if (writelen < response.size()) {
+            ExitWithError("Error while sending response");
+          }
+          epoll_ctl(epollfd, EPOLL_CTL_DEL, events[i].data.fd, nullptr);
+          close(events[i].data.fd);
+
+          std::cout << "============= REQUEST END ============== " << '\n';
         }
       }
     }
   }
 }
+
 TCPSocket::~TCPSocket() {
   close(socketfd);
   close(epollfd);

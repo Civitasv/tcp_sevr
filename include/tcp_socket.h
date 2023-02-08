@@ -5,8 +5,8 @@
 #include <sys/socket.h>
 
 struct TCPSocket {
+private:
   constexpr static int BUFFER_SIZE = 4096;
-  constexpr static int THREAD_NUM = 4;
   constexpr static int EVENTS_SIZE = 64;
 
   int socketfd;
@@ -15,15 +15,16 @@ struct TCPSocket {
 
   epoll_event epevent;
   epoll_event events[EVENTS_SIZE];
-  char msg[BUFFER_SIZE];
+  char buf[BUFFER_SIZE];
 
+public:
   TCPSocket(const std::string &ip, int port);
 
-  int Accept(sockaddr *addr, socklen_t *len);
+  void Accept();
 
-  int Read(int client, void *buf, size_t buffer_size);
+  std::string Read(int client, char *buf, size_t buffer_size);
 
-  int Write(int client, const void *buf, size_t buffer_size);
+  int Write(int client, const char *buf, size_t buffer_size);
 
   void Run(Routes &route);
   ~TCPSocket();

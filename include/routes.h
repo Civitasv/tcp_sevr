@@ -4,8 +4,10 @@
 #include <unordered_map>
 
 struct Routes {
+private:
   std::unordered_map<std::string, std::string> routes;
 
+public:
   void Add(const std::string &k, const std::string &v) { routes[k] = v; }
 
   bool Has(const std::string &k) { return routes.find(k) != routes.end(); }
