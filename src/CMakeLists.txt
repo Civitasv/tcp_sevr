@@ -1,4 +1,4 @@
-﻿add_library(web_server http_server.cc response.cc)
+﻿add_library(web_server tcp_socket.cc response.cc)
 
 target_include_directories(web_server PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
