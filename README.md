@@ -20,3 +20,5 @@ Run.
 然后打开 `127.0.0.1:8080` 即可查看：
 
 ![showcase](image/showcase.png)
+
+Benchmark: To be added. 目前考虑使用 https://github.com/frevib/io_uring-echo-server/blob/io-uring-feat-fast-poll/benchmarks/benchmarks.md
